@@ -5,20 +5,28 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"mime"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var port int
+var skipLookup bool
+var buffer bool
 var filename string
 var baseName string
+var contentType string
+var data []byte = nil
 
 func init() {
 	flag.IntVar(&port, "port", 0, "listening port, or 0 to use any free port")
+	flag.BoolVar(&skipLookup, "n", false, "do not attempt address resolution")
+	flag.BoolVar(&buffer, "buffer", false, "buffer the file in memory")
 }
 
 func fail(msg ...interface{}) {
@@ -63,12 +71,14 @@ func publicAddress() (string, error) {
 	return ips[0].String(), nil
 }
 
-func handle(resp http.ResponseWriter, req *http.Request) {
+func handleFile(resp http.ResponseWriter, req *http.Request) {
 	file, err := os.Open(filename)
+
 	if err != nil {
 		resp.WriteHeader(500)
 		fmt.Fprintln(os.Stderr, "handle: could not open file", err)
 		fmt.Fprintln(resp, "could not open file", err)
+		return
 	}
 
 	defer file.Close()
@@ -76,18 +86,25 @@ func handle(resp http.ResponseWriter, req *http.Request) {
 	// Write download information
 	disposition := fmt.Sprintf("attachment; filename=\"%s\"", baseName)
 	resp.Header().Add("Content-Disposition", disposition)
-
-	// Try to send an appropriate mime-type
-	contentType := mime.TypeByExtension(filepath.Ext(baseName))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
 	resp.Header().Add("Content-Type", contentType)
 
 	// Copy file content
 	_, err = io.Copy(resp, file)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "handle: failed to send file")
+		fmt.Fprintln(os.Stderr, "handle: failed to send file", err)
+	}
+}
+
+func handleBuffered(resp http.ResponseWriter, req *http.Request) {
+	// Write download information
+	disposition := fmt.Sprintf("attachment; filename=\"%s\"", baseName)
+	resp.Header().Add("Content-Disposition", disposition)
+	resp.Header().Add("Content-Type", contentType)
+
+	// Copy file content
+	_, err := resp.Write(data)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "handle: failed to send file", err)
 	}
 }
 
@@ -105,10 +122,26 @@ func main() {
 	if err != nil {
 		fail("could not open file:", err)
 	}
+
+	handle := handleFile
+	if buffer {
+		handle = handleBuffered
+		data, err = ioutil.ReadAll(file)
+		if err != nil {
+			fail("could not buffer file:", err)
+		}
+	}
+
 	file.Close()
 
 	// Keep a copy of the filename without directory
 	baseName = filepath.Base(filename)
+
+	// Try to send an appropriate mime-type
+	contentType := mime.TypeByExtension(filepath.Ext(baseName))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
 
 	// Start listening for connections
 	laddr := fmt.Sprintf(":%d", port)
@@ -121,6 +154,15 @@ func main() {
 	addr, err := publicAddress()
 	if err != nil {
 		fail("could not find public address:", err)
+	}
+
+	if !skipLookup {
+		if names, err := net.LookupAddr(addr); err == nil {
+			if len(names) > 0 {
+				addr = names[0]
+				addr = strings.TrimRight(addr, ".")
+			}
+		}
 	}
 
 	_, port, _ := net.SplitHostPort(nl.Addr().String())
