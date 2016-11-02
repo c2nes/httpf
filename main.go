@@ -138,7 +138,7 @@ func main() {
 	baseName = filepath.Base(filename)
 
 	// Try to send an appropriate mime-type
-	contentType := mime.TypeByExtension(filepath.Ext(baseName))
+	contentType = mime.TypeByExtension(filepath.Ext(baseName))
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
