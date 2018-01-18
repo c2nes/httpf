@@ -15,18 +15,32 @@ import (
 	"strings"
 )
 
+// Represents a list of headers given on the command line
+type headersSlice []string
+
 var port int
 var skipLookup bool
 var buffer bool
+var additionalHeaders headersSlice
 var filename string
 var baseName string
 var contentType string
 var data []byte = nil
 
+func (headers *headersSlice) String() string {
+	return strings.Join(*headers, ",")
+}
+
+func (headers *headersSlice) Set(arg string) error {
+	*headers = append(*headers, arg)
+	return nil
+}
+
 func init() {
 	flag.IntVar(&port, "port", 0, "listening port, or 0 to use any free port")
 	flag.BoolVar(&skipLookup, "n", false, "do not attempt address resolution")
 	flag.BoolVar(&buffer, "buffer", false, "buffer the file in memory")
+	flag.Var(&additionalHeaders, "header", "additional header(s)")
 }
 
 func fail(msg ...interface{}) {
@@ -84,9 +98,7 @@ func handleFile(resp http.ResponseWriter, req *http.Request) {
 	defer file.Close()
 
 	// Write download information
-	disposition := fmt.Sprintf("attachment; filename=\"%s\"", baseName)
-	resp.Header().Add("Content-Disposition", disposition)
-	resp.Header().Add("Content-Type", contentType)
+	addHeaders(resp.Header())
 
 	// Copy file content
 	_, err = io.Copy(resp, file)
@@ -97,9 +109,7 @@ func handleFile(resp http.ResponseWriter, req *http.Request) {
 
 func handleBuffered(resp http.ResponseWriter, req *http.Request) {
 	// Write download information
-	disposition := fmt.Sprintf("attachment; filename=\"%s\"", baseName)
-	resp.Header().Add("Content-Disposition", disposition)
-	resp.Header().Add("Content-Type", contentType)
+	addHeaders(resp.Header())
 
 	// Copy file content
 	_, err := resp.Write(data)
@@ -108,8 +118,26 @@ func handleBuffered(resp http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func addHeaders(headers http.Header) {
+	// Write download information
+	disposition := fmt.Sprintf("attachment; filename=\"%s\"", baseName)
+	headers.Add("Content-Disposition", disposition)
+	headers.Add("Content-Type", contentType)
+	for _, header := range additionalHeaders {
+		parts := strings.SplitN(header, ":", 2)
+		headers.Add(parts[0], parts[1])
+	}
+}
+
 func main() {
 	flag.Parse()
+
+	// Check headers
+	for _, header := range additionalHeaders {
+		if strings.Index(header, ":") < 1 {
+			fail("bad -header argument")
+		}
+	}
 
 	if flag.NArg() != 1 {
 		fail("filename required")
