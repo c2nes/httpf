@@ -61,6 +61,7 @@ var dirListTemplate = template.Must(template.New("dirlist").Parse(`
       <th>Name</th>
       <th>Size</th>
       <th>Modified</th>
+      <th></th>
     </thead>
     <tbody>
 {{- if .Parent }}
@@ -73,10 +74,15 @@ var dirListTemplate = template.Must(template.New("dirlist").Parse(`
 {{- range .Entries }}
       <tr>
         <td>
-          <a href="{{ .Path }}">{{ .Name }}</a>
+          <a href="{{ .Path }}?view=1">{{ .Name }}</a>
         </td>
         <td class="size">{{ .SizeHuman }}</td>
         <td>{{ .ModTime }}</td>
+{{- if .Dir }}
+        <td></td>
+{{- else }}
+        <td>(<a href="{{ .Path }}">Download</a>)</td>
+{{- end }}
       </tr>
 {{- end }}
     </tbody>
@@ -157,15 +163,17 @@ type dir struct {
 	index bool
 }
 
-func (d *dir) addHeaders(headers http.Header, info os.FileInfo) {
+func (d *dir) addHeaders(headers http.Header, info os.FileInfo, download bool) {
 	// Write download information
 	if info.IsDir() {
 		// For index
 		headers.Add("Content-Type", "text/html")
 	} else {
 		name := info.Name()
-		disposition := fmt.Sprintf("attachment; filename=\"%s\"", name)
-		headers.Add("Content-Disposition", disposition)
+		if download {
+			disposition := fmt.Sprintf("attachment; filename=\"%s\"", name)
+			headers.Add("Content-Disposition", disposition)
+		}
 		headers.Add("Content-Type", contentTypeFromName(name))
 		headers.Add("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
@@ -240,8 +248,11 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Preview or download?
+	download := req.FormValue("view") == ""
+
 	// Write download information
-	d.addHeaders(resp.Header(), info)
+	d.addHeaders(resp.Header(), info, download)
 
 	// HEAD request. No content returned.
 	if method == http.MethodHead {
@@ -263,6 +274,7 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 			Size      int64
 			SizeHuman string
 			ModTime   string
+			Dir       bool
 		}
 
 		data := struct {
@@ -289,6 +301,7 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 			if e.IsDir() {
 				entry.Name += "/"
 				entry.Path += "/"
+				entry.Dir = true
 			}
 
 			size := entry.Size
