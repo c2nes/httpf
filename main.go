@@ -74,14 +74,14 @@ var dirListTemplate = template.Must(template.New("dirlist").Parse(`
 {{- range .Entries }}
       <tr>
         <td>
-          <a href="{{ .Path }}?view=1">{{ .Name }}</a>
+          <a href="{{ .Path }}">{{ .Name }}</a>
         </td>
         <td class="size">{{ .SizeHuman }}</td>
         <td>{{ .ModTime }}</td>
 {{- if .Dir }}
         <td></td>
 {{- else }}
-        <td>(<a href="{{ .Path }}">Download</a>)</td>
+        <td>(<a href="{{ .Path }}?download=1">Download</a>)</td>
 {{- end }}
       </tr>
 {{- end }}
@@ -248,8 +248,13 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Preview or download?
-	download := req.FormValue("view") == ""
+	// Preview or download? In index generating mode we default to previewing.
+	var download bool
+	if d.index {
+		download = req.FormValue("download") != ""
+	} else{
+		download = req.FormValue("view") == ""
+	}
 
 	// Write download information
 	d.addHeaders(resp.Header(), info, download)
