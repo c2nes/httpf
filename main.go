@@ -185,8 +185,13 @@ func (d *dir) addHeaders(headers http.Header, info os.FileInfo, download bool) {
 		if download {
 			disposition := fmt.Sprintf("attachment; filename=\"%s\"", name)
 			headers.Add("Content-Disposition", disposition)
+			headers.Add("Content-Type", contentTypeFromName(name))
+		} else {
+			// When previewing a file set text/plain so the browser will display
+			// the source rather than interpreting HTML or triggering download
+			// for non-supported filetypes.
+			headers.Add("Content-Type", "text/plain")
 		}
-		headers.Add("Content-Type", contentTypeFromName(name))
 		headers.Add("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
 
