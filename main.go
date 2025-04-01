@@ -260,13 +260,6 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// 403 on directories if not returning indexes
-	if info.IsDir() && !d.index {
-		resp.WriteHeader(http.StatusForbidden)
-		fmt.Fprintln(resp, "permission denied")
-		return
-	}
-
 	// Handle file upload. If uploads are disabled this will have been rejected earlier.
 	if method == http.MethodPost {
 		uploadErr := func(err error) {
@@ -324,6 +317,18 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 				break
 			}
 		}
+
+		if !d.index {
+			resp.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
+	// 403 on directories if not returning indexes
+	if info.IsDir() && !d.index {
+		resp.WriteHeader(http.StatusForbidden)
+		fmt.Fprintln(resp, "permission denied")
+		return
 	}
 
 	// Preview or download? In index generating mode we default to previewing.
