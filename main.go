@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -28,11 +29,14 @@ var skipLookup bool
 var buffer bool
 var additionalHeaders headersSlice
 var index bool
+var logRequests bool
+var upload bool
 
 // Template used for directory listings
 var dirListTemplate = template.Must(template.New("dirlist").Parse(`
 <html>
 <head>
+  <meta charset="utf-8" />
   <title>{{ .Path }}</title>
   <style>
     body {
@@ -56,6 +60,12 @@ var dirListTemplate = template.Must(template.New("dirlist").Parse(`
 </head>
 <body>
   <h1>Directory listing for {{ .Path }}</h1>
+{{- if .Upload }}
+  <form action="" method="post" enctype="multipart/form-data">
+    <input type="file" name="file" id="file" multiple>
+    <input type="submit" value="Upload">
+  </form>
+{{- end }}
   <table>
     <thead>
       <th>Name</th>
@@ -106,6 +116,8 @@ func init() {
 	flag.BoolVar(&buffer, "buffer", false, "buffer the file in memory")
 	flag.Var(&additionalHeaders, "header", "additional header(s)")
 	flag.BoolVar(&index, "index", false, "generate directory listings")
+	flag.BoolVar(&logRequests, "log", false, "log requests")
+	flag.BoolVar(&upload, "upload", false, "allow file upload")
 }
 
 func fail(msg ...interface{}) {
@@ -198,7 +210,9 @@ func (d *dir) pathIsUnderRoot(p string) bool {
 
 func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 	method := req.Method
-	if method != http.MethodGet && method != http.MethodHead {
+	if method != http.MethodGet &&
+		method != http.MethodHead &&
+		!(upload && method == http.MethodPost) {
 		resp.WriteHeader(http.StatusMethodNotAllowed)
 		fmt.Fprintln(resp, "method not allowed")
 		return
@@ -248,11 +262,70 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Handle file upload. If uploads are disabled this will have been rejected earlier.
+	if method == http.MethodPost {
+		uploadErr := func(err error) {
+			resp.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(os.Stderr, "handle: could not handle file upload:", err)
+			fmt.Fprintln(resp, "could not upload file", err)
+		}
+		processPart := func(part *multipart.Part) bool {
+			var out *os.File
+			var err error
+
+			defer part.Close()
+			partFileName := part.FileName()
+			if partFileName == "" {
+				out, err = os.CreateTemp(localPath, "httpf-upload-")
+				if err != nil {
+					uploadErr(err)
+					return false
+				}
+			} else {
+				newFilePath := filepath.Join(localPath, partFileName)
+				if !d.pathIsUnderRoot(newFilePath) {
+					resp.WriteHeader(http.StatusNotFound)
+					fmt.Fprintln(resp, "not found")
+					return false
+				}
+				out, err = os.OpenFile(newFilePath, os.O_WRONLY|os.O_CREATE, 0666)
+				if err != nil {
+					uploadErr(err)
+					return false
+				}
+			}
+			defer out.Close()
+			if _, err := io.Copy(out, part); err != nil {
+				uploadErr(err)
+				return false
+			}
+			return true
+		}
+		files, err := req.MultipartReader()
+		if err != nil {
+			uploadErr(err)
+			return
+		}
+		for {
+			part, err := files.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				uploadErr(err)
+				return
+			}
+			if !processPart(part) {
+				break
+			}
+		}
+	}
+
 	// Preview or download? In index generating mode we default to previewing.
 	var download bool
 	if d.index {
 		download = req.FormValue("download") != ""
-	} else{
+	} else {
 		download = req.FormValue("view") == ""
 	}
 
@@ -286,7 +359,10 @@ func (d *dir) handle(resp http.ResponseWriter, req *http.Request) {
 			Path    string
 			Parent  string
 			Entries []FileEntry
-		}{}
+			Upload  bool
+		}{
+			Upload: upload,
+		}
 
 		data.Path = strings.Trim(req.URL.Path, "/") + "/"
 		if data.Path != "/" {
@@ -442,6 +518,48 @@ func newFileHandler(filename string, buffer bool) http.HandlerFunc {
 	return bf.handle
 }
 
+type LoggingResponseWriter struct {
+	http.ResponseWriter
+
+	request *http.Request
+	logged  bool
+}
+
+func (l *LoggingResponseWriter) log(statusCode int) {
+	if l.logged {
+		return
+	}
+
+	l.logged = true
+	log.Printf("%s %s %s → %d",
+		l.request.Method,
+		l.request.URL,
+		l.request.Proto,
+		statusCode,
+	)
+}
+
+func (l *LoggingResponseWriter) Write(data []byte) (int, error) {
+	l.log(http.StatusOK)
+	return l.ResponseWriter.Write(data)
+}
+
+func (l *LoggingResponseWriter) WriteHeader(statusCode int) {
+	l.log(statusCode)
+	l.ResponseWriter.WriteHeader(statusCode)
+}
+
+func addLogging(handler http.HandlerFunc) http.HandlerFunc {
+	return func(resp http.ResponseWriter, req *http.Request) {
+		resp = &LoggingResponseWriter{
+			ResponseWriter: resp,
+			request:        req,
+			logged:         false,
+		}
+		handler(resp, req)
+	}
+}
+
 func main() {
 	flag.Parse()
 
@@ -472,6 +590,10 @@ func main() {
 		handle = newDirHandler(filename)
 	} else {
 		handle = newFileHandler(filename, buffer)
+	}
+
+	if logRequests {
+		handle = addLogging(handle)
 	}
 
 	// Start listening for connections
